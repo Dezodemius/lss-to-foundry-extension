@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LSS to Foundry</title>
+  <link rel="stylesheet" href="src/popup.css">
+  <script type="module" src="src/popup.mjs"></script>
+</head>
+<body>
+  <header>
+    <div><p class="eyebrow">ИЗ ЛИСТА — В ПРИКЛЮЧЕНИЕ</p><h1>LSS <span>→</span> Foundry</h1></div>
+    <button id="logout" class="quiet" hidden>Выйти</button>
+  </header>
+  <p id="status" role="status" aria-live="polite">Проверяем сессию LSS…</p>
+  <section id="signin" hidden>
+    <div class="entry-mark" aria-hidden="true">↗</div>
+    <h2>Твои персонажи уже ждут</h2>
+    <p>Войди на сайте LSS, затем открой расширение. Персонажи появятся здесь.</p>
+    <button id="login" class="primary">Войти в LSS</button>
+  </section>
+  <section id="account" hidden>
+    <div class="section-heading"><h2>Персонажи <span id="count"></span></h2><button id="refresh" class="quiet">Обновить</button></div>
+    <label for="search">Поиск персонажа</label>
+    <input id="search" type="search" placeholder="Имя или класс" maxlength="250">
+    <div id="characters" class="characters"></div>
+    <p class="note">Каждый импорт создаёт нового актёра. Свои заклинания из Гримуара пока добавляются отдельным JSON в Foundry.</p>
+  </section>
+  <details id="connection">
+    <summary>Подключение к Foundry</summary>
+    <label for="foundry-url">Адрес твоей Foundry</label>
+    <div class="connect-row"><input id="foundry-url" type="url" placeholder="http://localhost:30000"><button id="connect">Подключить</button></div>
+    <label for="foundry-tab">Мир для импорта</label>
+    <select id="foundry-tab"><option value="">Сначала подключи Foundry</option></select>
+    <p id="connection-status" class="note">Открой мир в этом браузере и включи модуль LSS to Foundry.</p>
+  </details>
+  <footer>Неофициальная интеграция · данные передаются в выбранную Foundry</footer>
+</body>
+</html>

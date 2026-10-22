@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "LSS to Foundry",
+  "description": "Импорт персонажей Long Story Short в подключённый мир Foundry VTT.",
+  "version": "0.1.0",
+  "minimum_chrome_version": "120",
+  "permissions": ["cookies", "storage", "scripting"],
+  "host_permissions": ["https://longstoryshort.app/*", "https://api.longstoryshort.app/*"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": { "service_worker": "src/background.mjs", "type": "module" },
+  "action": { "default_title": "LSS to Foundry", "default_popup": "popup.html" }
+}

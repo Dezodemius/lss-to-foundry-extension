@@ -1,0 +1,8 @@
+{
+  "name": "lss-to-foundry-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test", "check": "node --check src/background.mjs && node --check src/popup.mjs" },
+  "engines": { "node": ">=22" }
+}
