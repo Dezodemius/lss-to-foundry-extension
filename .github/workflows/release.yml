@@ -1,0 +1,146 @@
+name: Release browser extension
+
+on:
+  push:
+    tags:
+      - '**'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.event.deleted == false
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require the tagged commit to belong to main
+        shell: pwsh
+        run: |
+          git fetch origin '+refs/heads/main:refs/remotes/origin/main'
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch main.' }
+          git merge-base --is-ancestor HEAD origin/main
+          if ($LASTEXITCODE -ne 0) { throw 'The tagged commit must be in the history of main.' }
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Check syntax and run tests
+        shell: pwsh
+        run: |
+          foreach ($file in Get-ChildItem src -Filter '*.mjs' -Recurse -File) {
+            node --check $file.FullName
+            if ($LASTEXITCODE -ne 0) { throw "Invalid script: $($file.Name)" }
+          }
+          # The project uses the Node.js test runner and has no npm dependencies.
+          npm test
+          if ($LASTEXITCODE -ne 0) { throw 'Extension tests failed.' }
+
+      - name: Package Chrome extension
+        shell: pwsh
+        run: |
+          $version = $env:RELEASE_TAG -creplace '^v', ''
+          if ($version -cnotmatch '^(0|[1-9][0-9]{0,4})(\.(0|[1-9][0-9]{0,4})){0,3}$') {
+            throw 'Use a Chrome version tag such as 0.1.0, v0.1.0 or 0.0.0.1 (1 to 4 numeric components).'
+          }
+          $parts = @($version.Split('.') | ForEach-Object { [int]$_ })
+          if (@($parts | Where-Object { $_ -gt 65535 }).Count -or -not @($parts | Where-Object { $_ -gt 0 }).Count) {
+            throw 'Chrome version components must be 0..65535 and cannot all be zero.'
+          }
+
+          $manifest = Get-Content manifest.json -Raw | ConvertFrom-Json
+          if ($manifest.manifest_version -ne 3) { throw 'Only Manifest V3 is supported by this build.' }
+          $manifest.version = $version
+          $manifest | Add-Member -NotePropertyName version_name -NotePropertyValue $env:RELEASE_TAG -Force
+          $stage = Join-Path $env:RUNNER_TEMP 'chrome-extension-release'
+          New-Item -ItemType Directory -Path $stage -ErrorAction Stop | Out-Null
+          Copy-Item -LiteralPath popup.html -Destination $stage -ErrorAction Stop
+          Copy-Item -LiteralPath src -Destination $stage -Recurse -ErrorAction Stop
+          foreach ($folder in @('icons', 'assets', '_locales')) {
+            if (Test-Path -LiteralPath $folder) { Copy-Item -LiteralPath $folder -Destination $stage -Recurse -ErrorAction Stop }
+          }
+          $json = ($manifest | ConvertTo-Json -Depth 100) -replace '\r?\n', "`r`n"
+          $utf8 = [Text.UTF8Encoding]::new($false)
+          [IO.File]::WriteAllText((Join-Path $stage 'manifest.json'), $json + "`r`n", $utf8)
+
+          # Verify every entry point and any declared icon before creating an installable ZIP.
+          $required = @('manifest.json', 'popup.html', $manifest.background.service_worker, $manifest.action.default_popup)
+          if ($manifest.icons) { $required += @($manifest.icons.PSObject.Properties.Value) }
+          if ($manifest.action.default_icon -is [string]) { $required += $manifest.action.default_icon }
+          elseif ($manifest.action.default_icon) { $required += @($manifest.action.default_icon.PSObject.Properties.Value) }
+          $stageRoot = [IO.Path]::GetFullPath($stage) + [IO.Path]::DirectorySeparatorChar
+          foreach ($path in $required) {
+            if (-not $path) { throw 'An extension entry point is missing.' }
+            $fullPath = [IO.Path]::GetFullPath((Join-Path $stage $path))
+            if (-not $fullPath.StartsWith($stageRoot, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+              throw "Missing or unsafe extension resource: $path"
+            }
+          }
+
+          New-Item -ItemType Directory -Path dist -ErrorAction Stop | Out-Null
+          Copy-Item -LiteralPath (Join-Path $stage 'manifest.json') -Destination dist/manifest.json
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zipPath = Join-Path $PWD 'dist/lss-to-foundry-extension-chrome.zip'
+          [IO.Compression.ZipFile]::CreateFromDirectory($stage, $zipPath)
+          $archive = [IO.Compression.ZipFile]::OpenRead($zipPath)
+          try {
+            foreach ($path in $required) {
+              if (-not $archive.GetEntry($path.Replace('\', '/'))) { throw "Missing ZIP entry: $path" }
+            }
+            foreach ($entry in $archive.Entries) {
+              if ($entry.FullName -match '(^|/)(\.git|node_modules|test|tests|docs)/|(^|/)(README\.md|CHROMEWEBSTORE\.md|\.env)$|\.map$|\.(test|spec)\.') {
+                throw "Development file in extension package: $($entry.FullName)"
+              }
+            }
+            $reader = [IO.StreamReader]::new($archive.GetEntry('manifest.json').Open())
+            try { $packed = $reader.ReadToEnd() } finally { $reader.Dispose() }
+            if ($packed -cne [IO.File]::ReadAllText((Join-Path $PWD 'dist/manifest.json'))) {
+              throw 'The ZIP manifest differs from the standalone release manifest.'
+            }
+          } finally { $archive.Dispose() }
+          $checksums = @('lss-to-foundry-extension-chrome.zip', 'manifest.json') | ForEach-Object {
+            $hash = (Get-FileHash -LiteralPath (Join-Path $PWD "dist/$_") -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $_"
+          }
+          [IO.File]::WriteAllText((Join-Path $PWD 'dist/SHA256SUMS.txt'), ($checksums -join "`r`n") + "`r`n", $utf8)
+
+      - name: Publish GitHub release after uploading all files
+        shell: pwsh
+        run: |
+          $releases = gh api --paginate "repos/$env:GH_REPO/releases" --jq '.[] | select(.tag_name == env.RELEASE_TAG) | {draft: .draft}'
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect existing releases.' }
+          if ($releases) {
+            $existing = $releases | ConvertFrom-Json
+            if (-not $existing.draft) { throw 'This tag already has a published release. Use a new tag.' }
+          } else {
+            $notesPath = Join-Path $env:RUNNER_TEMP 'extension-release-notes.md'
+            $notes = @(
+              'Download lss-to-foundry-extension-chrome.zip and extract it to a folder.',
+              'In Chrome, open chrome://extensions, enable Developer mode, select Load unpacked, and choose the extracted folder.',
+              'Chrome 120+ is the supported target. Other browser builds are not included.',
+              'This ZIP can also be uploaded to the Chrome Web Store developer dashboard; store assets and policy requirements are separate.',
+              'The release includes manifest.json for inspection and SHA256SUMS.txt for integrity checks.'
+            ) -join "`r`n`r`n"
+            [IO.File]::WriteAllText($notesPath, $notes, [Text.UTF8Encoding]::new($false))
+            gh release create $env:RELEASE_TAG --verify-tag --draft --title $env:RELEASE_TAG --notes-file $notesPath
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot create release draft.' }
+          }
+          gh release upload $env:RELEASE_TAG dist/lss-to-foundry-extension-chrome.zip dist/manifest.json dist/SHA256SUMS.txt --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot upload assets; the release remains a draft.' }
+          gh release edit $env:RELEASE_TAG --draft=false --latest --title $env:RELEASE_TAG
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot publish the release.' }
